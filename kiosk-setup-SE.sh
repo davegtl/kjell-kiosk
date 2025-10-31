@@ -28,6 +28,7 @@ apt-get install -y --no-install-recommends \
   x11-xserver-utils \
   xkb-data \
   xprintidle \
+  xauth \
   onboard \
   unclutter \
   dbus-x11 \
@@ -65,6 +66,34 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin ${KIOSK_USER} --noclear %I \$TERM
 EOF
 systemctl daemon-reload
+
+# --- Systemd service to start X on tty1 as kiosk (no .bash_profile needed) ---
+echo "[kiosk-setup] Installing startx@kiosk systemd service"
+cat >/etc/systemd/system/startx@.service <<'EOF'
+[Unit]
+Description=Start X on %I
+After=getty@tty1.service
+Requires=getty@tty1.service
+Conflicts=display-manager.service
+
+[Service]
+User=%i
+PAMName=login
+TTYPath=/dev/tty1
+TTYReset=yes
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+Environment=DISPLAY=:0
+ExecStart=/bin/bash -lc 'startx -- -nocursor'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl enable startx@kiosk.service
 
 # --- Firefox Enterprise Policies (Snap path) ---
 echo "[kiosk-setup] Writing Firefox policies"
@@ -169,16 +198,6 @@ EOF
 chmod +x "${KIOSK_HOME}/reset.sh"
 chown "${KIOSK_USER}:${KIOSK_USER}" "${KIOSK_HOME}/reset.sh"
 
-# --- Auto-start X after autologin ---
-PROFILE="${KIOSK_HOME}/.bash_profile"
-cat > "$PROFILE" <<'EOF'
-# Auto-start X only on tty1
-if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-  startx -- -nocursor
-fi
-EOF
-chown "${KIOSK_USER}:${KIOSK_USER}" "$PROFILE"
-
 # --- Nightly reboot at 02:00 ---
 echo "[kiosk-setup] Adding nightly reboot cron job"
 ( crontab -u "$KIOSK_USER" -l 2>/dev/null; echo "0 2 * * * /sbin/reboot" ) | crontab -u "$KIOSK_USER" -
@@ -190,6 +209,3 @@ if systemctl list-unit-files | grep -q '^systemd-networkd-wait-online.service'; 
   systemctl mask systemd-networkd-wait-online.service || true
 fi
 
-echo "[kiosk-setup] Setup completed at $(date)"
-echo "Please unplug the USB drive within 30 seconds."
-sleep 30
