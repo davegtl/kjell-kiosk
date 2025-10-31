@@ -171,3 +171,5 @@ systemctl mask systemd-networkd-wait-online.service || true
 
 
 echo "[SWEDISH-kiosk-setup] done at $(date)"
+echo "Unplug USB, you got 30seconds"
+wait 30
