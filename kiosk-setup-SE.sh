@@ -1,22 +1,31 @@
 #!/bin/bash
 set -euo pipefail
+LOG=/var/log/kiosk-setup.log
+exec > >(tee -a "$LOG") 2>&1
 
+echo "[kiosk-setup] starting at $(date)"
+
+export DEBIAN_FRONTEND=noninteractive
 KIOSK_USER="kiosk"
-KIOSK_HOME="/home/$KIOSK_USER"
+KIOSK_HOME="/home/${KIOSK_USER}"
 
-# Create user if missing
-if ! id -u "$KIOSK_USER" >/dev/null 2>&1; then
-  useradd -m -s /bin/bash "$KIOSK_USER"
-fi
+# --- Create kiosk user ---
+id "$KIOSK_USER" &>/dev/null || useradd -m -s /bin/bash "$KIOSK_USER"
 
-# Minimal packages: X, WM, startx deps, Firefox (snap)
+# --- Install packages ---
 apt-get update
 apt-get install -y --no-install-recommends \
-  xserver-xorg xinit openbox x11-xserver-utils xauth dbus-x11 unclutter snapd
+  cage \
+  snapd \
+  dbus-user-session \
+  fonts-dejavu-core \
+  ca-certificates \
+  curl
+
 systemctl enable --now snapd.socket || true
 snap list firefox >/dev/null 2>&1 || snap install firefox
 
-# Autologin on tty1 as kiosk
+# --- Autologin on tty1 ---
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 cat >/etc/systemd/system/getty@tty1.service.d/override.conf <<EOF
 [Service]
@@ -25,10 +34,10 @@ ExecStart=-/sbin/agetty --autologin ${KIOSK_USER} --noclear %I \$TERM
 EOF
 systemctl daemon-reload
 
-# Systemd unit to start X on tty1 (no .bash_profile hacks)
-cat >/etc/systemd/system/startx@.service <<'EOF'
+# --- Wayland kiosk service ---
+cat >/etc/systemd/system/cage@.service <<'EOF'
 [Unit]
-Description=Start X on %I
+Description=Wayland Kiosk (Cage) on %I
 After=getty@tty1.service
 Requires=getty@tty1.service
 Conflicts=display-manager.service
@@ -37,34 +46,17 @@ Conflicts=display-manager.service
 User=%i
 PAMName=login
 TTYPath=/dev/tty1
-TTYReset=yes
 StandardInput=tty
 StandardOutput=tty
 StandardError=tty
-Environment=DISPLAY=:0
-ExecStart=/bin/bash -lc 'startx -- -nocursor'
+Environment=MOZ_ENABLE_WAYLAND=1
+ExecStart=/usr/bin/cage -- snap run firefox --kiosk --private-window https://kjell.com/se/
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl enable startx@kiosk.service
 
-# User X session: Openbox + Firefox kiosk to your URL
-install -o "$KIOSK_USER" -g "$KIOSK_USER" -m 0755 -d "$KIOSK_HOME"
-cat >"${KIOSK_HOME}/.xinitrc" <<'EOF'
-#!/bin/bash
-set -e
-# keep screen awake
-xset s off -dpms s noblank || true
-# start WM
-openbox-session &
-# hide cursor after 2s idle (optional)
-(unclutter -idle 2 || true) &
-# launch Firefox in kiosk
-exec snap run firefox --no-remote --kiosk --private-window "https://kjell.com/se/"
-EOF
-chown "$KIOSK_USER:$KIOSK_USER" "${KIOSK_HOME}/.xinitrc"
-chmod +x "${KIOSK_HOME}/.xinitrc"
+systemctl enable cage@kiosk.service
 
-echo "Done. Reboot to enter kiosk."
+echo "[kiosk-setup] done. reboot to start kiosk."
